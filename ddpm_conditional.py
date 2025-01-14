@@ -1,9 +1,3 @@
-"""
-This code train a conditional diffusion model on CIFAR.
-It is based on @dome272.
-
-@wandbcode{condition_diffusion}
-"""
 
 import argparse, logging, copy
 from types import SimpleNamespace
