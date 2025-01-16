@@ -11,7 +11,7 @@ from fastprogress import progress_bar
 
 import wandb
 from utils import *
-from modules import UNet_conditional, EMA
+from modules import UNet, EMA
 
 
 config = SimpleNamespace(    
@@ -21,11 +21,10 @@ config = SimpleNamespace(
     seed = 42,
     batch_size = 10,
     img_size = 64,
-    num_classes = 10,
     dataset_path = get_cifar(img_size=64),
     train_folder = "train",
     val_folder = "test",
-    device = "cuda",
+    device = "cpu",
     slice_size = 1,
     do_validation = True,
     fp16 = True,
@@ -38,7 +37,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s", level=log
 
 
 class Diffusion:
-    def __init__(self, noise_steps=1000, beta_start=1e-4, beta_end=0.02, img_size=256, num_classes=10, c_in=3, c_out=3, device="cuda", **kwargs):
+    def __init__(self, noise_steps=1000, beta_start=1e-4, beta_end=0.02, img_size=256, c_in=3, c_out=3, device="cuda", **kwargs):
         self.noise_steps = noise_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
@@ -48,11 +47,10 @@ class Diffusion:
         self.alpha_hat = torch.cumprod(self.alpha, dim=0)
 
         self.img_size = img_size
-        self.model = UNet_conditional(c_in, c_out, num_classes=num_classes, **kwargs).to(device)
+        self.model = UNet(c_in, c_out, **kwargs).to(device)
         self.ema_model = copy.deepcopy(self.model).eval().requires_grad_(False)
         self.device = device
         self.c_in = c_in
-        self.num_classes = num_classes
 
     def prepare_noise_schedule(self):
         return torch.linspace(self.beta_start, self.beta_end, self.noise_steps)
@@ -68,19 +66,18 @@ class Diffusion:
         return sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * Ɛ, Ɛ
     
     @torch.inference_mode()
-    def sample(self, use_ema, labels, cfg_scale=3):
+    def sample(self, use_ema, I_image):
         model = self.ema_model if use_ema else self.model
-        n = len(labels)
+        n = len(I_image)
         logging.info(f"Sampling {n} new images....")
         model.eval()
         with torch.inference_mode():
-            x = torch.randn((n, self.c_in, self.img_size, self.img_size)).to(self.device)
+            #Diffuse initial image to last time step
+            t_first = torch.randint(low=self.noise_steps-1, high=self.noise_steps, size=(n,)).to(self.device)
+            x, _ = self.noise_images(I_image, t_first)
             for i in progress_bar(reversed(range(1, self.noise_steps)), total=self.noise_steps-1, leave=False):
                 t = (torch.ones(n) * i).long().to(self.device)
-                predicted_noise = model(x, t, labels)
-                if cfg_scale > 0:
-                    uncond_predicted_noise = model(x, t, None)
-                    predicted_noise = torch.lerp(uncond_predicted_noise, predicted_noise, cfg_scale)
+                predicted_noise = model(x, t)
                 alpha = self.alpha[t][:, None, None, None]
                 alpha_hat = self.alpha_hat[t][:, None, None, None]
                 beta = self.beta[t][:, None, None, None]
@@ -105,16 +102,19 @@ class Diffusion:
         avg_loss = 0.
         if train: self.model.train()
         else: self.model.eval()
-        pbar = progress_bar(self.train_dataloader, leave=False)
-        for i, (images, labels) in enumerate(pbar):
+        pbar = progress_bar(zip(self.train_dataloader_i, self.train_dataloader_f), leave=False, total=len(self.train_dataloader_i))
+        for i, [(img_i,label_i), (img_f,label_f)] in enumerate(pbar):
             with torch.autocast("cuda") and (torch.inference_mode() if not train else torch.enable_grad()):
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                t = self.sample_timesteps(images.shape[0]).to(self.device)
-                x_t, noise = self.noise_images(images, t)
-                if np.random.random() < 0.1:
-                    labels = None
-                predicted_noise = self.model(x_t, t, labels)
+                img_i = img_i.to(self.device)
+                label_i = label_i.to(self.device)
+                t = self.sample_timesteps(img_i.shape[0]).to(self.device)
+                x_t, _ = self.noise_images(img_i, t)
+
+                img_f = img_f.to(self.device)
+                label_f = label_f.to(self.device)
+                _ , noise = self.noise_images(img_f, t)
+        
+                predicted_noise = self.model(x_t, t)
                 loss = self.mse(noise, predicted_noise)
                 avg_loss += loss
             if train:
@@ -125,13 +125,14 @@ class Diffusion:
         return avg_loss.mean().item()
 
     def log_images(self):
-        "Log images to wandb and save them to disk"
-        labels = torch.arange(self.num_classes).long().to(self.device)
-        sampled_images = self.sample(use_ema=False, labels=labels)
+        "Log some random images to wandb and save them to disk"
+        random_image = self.val_dataloader_i.dataset[torch.randint(0, len(self.val_dataloader_i.dataset), (1,))][0]
+        random_image = random_image[None,:,:,:]
+        sampled_images = self.sample(use_ema=False, I_image=random_image)
         wandb.log({"sampled_images":     [wandb.Image(img.permute(1,2,0).squeeze().cpu().numpy()) for img in sampled_images]})
 
         # EMA model sampling
-        ema_sampled_images = self.sample(use_ema=True, labels=labels)
+        ema_sampled_images = self.sample(use_ema=True, I_image=random_image)
         plot_images(sampled_images)  #to display on jupyter if available
         wandb.log({"ema_sampled_images": [wandb.Image(img.permute(1,2,0).squeeze().cpu().numpy()) for img in ema_sampled_images]})
 
@@ -150,13 +151,13 @@ class Diffusion:
 
     def prepare(self, args):
         mk_folders(args.run_name)
-        self.train_dataloader, self.val_dataloader = get_data(args)
+        self.train_dataloader_i, self.val_dataloader_i,  self.train_dataloader_f, self.val_dataloader_f= get_cifar_data(args.dataset_path)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=args.lr, eps=1e-5)
         self.scheduler = optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=args.lr, 
-                                                 steps_per_epoch=len(self.train_dataloader), epochs=args.epochs)
+                                                 steps_per_epoch=len(self.train_dataloader_i), epochs=args.epochs)
         self.mse = nn.MSELoss()
         self.ema = EMA(0.995)
-        self.scaler = torch.cuda.amp.GradScaler()
+        self.scaler = torch.amp.GradScaler(self.device)
 
     def fit(self, args):
         for epoch in progress_bar(range(args.epochs), total=args.epochs, leave=True):
@@ -185,7 +186,6 @@ def parse_args(config):
     parser.add_argument('--seed', type=int, default=config.seed, help='random seed')
     parser.add_argument('--batch_size', type=int, default=config.batch_size, help='batch size')
     parser.add_argument('--img_size', type=int, default=config.img_size, help='image size')
-    parser.add_argument('--num_classes', type=int, default=config.num_classes, help='number of classes')
     parser.add_argument('--dataset_path', type=str, default=config.dataset_path, help='path to dataset')
     parser.add_argument('--device', type=str, default=config.device, help='device')
     parser.add_argument('--lr', type=float, default=config.lr, help='learning rate')
@@ -204,7 +204,7 @@ if __name__ == '__main__':
     ## seed everything
     set_seed(config.seed)
 
-    diffuser = Diffusion(config.noise_steps, img_size=config.img_size, num_classes=config.num_classes)
+    diffuser = Diffusion(config.noise_steps, img_size=config.img_size)
     with wandb.init(project="train_sd", group="train", config=config):
         diffuser.prepare(config)
         diffuser.fit(config)

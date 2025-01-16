@@ -89,30 +89,54 @@ def save_images(images, path, **kwargs):
     im.save(path)
 
 
-def get_data(args):
+def get_cifar_data(dataset_path, img_size=64, batch_size=8, train_folder="train", val_folder="test", slice_size=-1, num_workers=4):
     train_transforms = torchvision.transforms.Compose([
-        T.Resize(args.img_size + int(.25*args.img_size)),  # args.img_size + 1/4 *args.img_size
-        T.RandomResizedCrop(args.img_size, scale=(0.8, 1.0)),
+        T.Resize(img_size + int(.25*img_size)),  # img_size + 1/4 *img_size
+        T.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
         T.ToTensor(),
         T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
 
     val_transforms = torchvision.transforms.Compose([
-        T.Resize(args.img_size),
+        T.Resize(img_size),
         T.ToTensor(),
         T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
 
-    train_dataset = torchvision.datasets.ImageFolder(os.path.join(args.dataset_path, args.train_folder), transform=train_transforms)
-    val_dataset = torchvision.datasets.ImageFolder(os.path.join(args.dataset_path, args.val_folder), transform=val_transforms)
-    
-    if args.slice_size>1:
-        train_dataset = torch.utils.data.Subset(train_dataset, indices=range(0, len(train_dataset), args.slice_size))
-        val_dataset = torch.utils.data.Subset(val_dataset, indices=range(0, len(val_dataset), args.slice_size))
+    train_dataset = torchvision.datasets.ImageFolder(os.path.join(dataset_path, train_folder), transform=train_transforms)
+    val_dataset = torchvision.datasets.ImageFolder(os.path.join(dataset_path, val_folder), transform=val_transforms)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    val_dataset = DataLoader(val_dataset, batch_size=2*args.batch_size, shuffle=False, num_workers=args.num_workers)
-    return train_dataloader, val_dataset
+    class0_indices_train = [i for i, (path, label) in enumerate(train_dataset.imgs) if label == 0]
+    class1_indices_train = [i for i, (path, label) in enumerate(train_dataset.imgs) if label == 1]
+
+    class0_indices_val = [i for i, (path, label) in enumerate(val_dataset.imgs) if label == 0]
+    class1_indices_val = [i for i, (path, label) in enumerate(val_dataset.imgs) if label == 1]
+
+    train_dataset_I = torch.utils.data.Subset(train_dataset, indices=class0_indices_train)
+    val_dataset_I = torch.utils.data.Subset(val_dataset, indices=class0_indices_val)
+
+    train_dataset_F = torch.utils.data.Subset(train_dataset, indices=class1_indices_train)
+    val_dataset_F = torch.utils.data.Subset(val_dataset, indices=class1_indices_val)
+    
+    if slice_size>1:
+        train_dataset_I = torch.utils.data.Subset(train_dataset_I, indices=range(0, len(train_dataset_I), slice_size))
+        val_dataset_I = torch.utils.data.Subset(val_dataset_I, indices=range(0, len(val_dataset_I), slice_size))
+
+        train_dataset_F = torch.utils.data.Subset(train_dataset_F, indices=range(0, len(train_dataset_F), slice_size))
+        val_dataset_F = torch.utils.data.Subset(val_dataset_F, indices=range(0, len(val_dataset_F), slice_size))
+    
+    print(f"Train dataset Initial: {len(train_dataset_I)} images")
+    print(f"Val dataset Initial: {len(val_dataset_I)} images")
+    print(f"Train dataset Final: {len(train_dataset_F)} images")
+    print(f"Val dataset Final: {len(val_dataset_F)} images")
+
+
+    train_dataloader_I = DataLoader(train_dataset_I, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    val_dataset_I = DataLoader(val_dataset_I, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    train_dataloader_F = DataLoader(train_dataset_F, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    val_dataset_F = DataLoader(val_dataset_F, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    return train_dataloader_I, val_dataset_I, train_dataloader_F, val_dataset_F
 
 
 def mk_folders(run_name):
