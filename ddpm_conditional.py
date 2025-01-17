@@ -66,26 +66,30 @@ class Diffusion:
         return sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * Ɛ, Ɛ
     
     @torch.inference_mode()
-    def sample(self, use_ema, I_image):
+    def sample(self, use_ema, I_image, do_Diffusion = False):
         model = self.ema_model if use_ema else self.model
         n = len(I_image)
         logging.info(f"Sampling {n} new images....")
         model.eval()
         with torch.inference_mode():
-            #Diffuse initial image to last time step
-            t_first = torch.randint(low=self.noise_steps-1, high=self.noise_steps, size=(n,)).to(self.device)
-            x, _ = self.noise_images(I_image, t_first)
-            for i in progress_bar(reversed(range(1, self.noise_steps)), total=self.noise_steps-1, leave=False):
-                t = (torch.ones(n) * i).long().to(self.device)
-                predicted_noise = model(x, t)
-                alpha = self.alpha[t][:, None, None, None]
-                alpha_hat = self.alpha_hat[t][:, None, None, None]
-                beta = self.beta[t][:, None, None, None]
-                if i > 1:
-                    noise = torch.randn_like(x)
-                else:
-                    noise = torch.zeros_like(x)
-                x = 1 / torch.sqrt(alpha) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
+            if do_Diffusion == True:
+                #Diffuse initial image to last time step
+                t_first = torch.randint(low=self.noise_steps-1, high=self.noise_steps, size=(n,)).to(self.device)
+                x, _ = self.noise_images(I_image, t_first)
+                for i in progress_bar(reversed(range(1, self.noise_steps)), total=self.noise_steps-1, leave=False):
+                    t = (torch.ones(n) * i).long().to(self.device)
+                    predicted_noise = model(x, t)
+                    alpha = self.alpha[t][:, None, None, None]
+                    alpha_hat = self.alpha_hat[t][:, None, None, None]
+                    beta = self.beta[t][:, None, None, None]
+                    if i > 1:
+                        noise = torch.randn_like(x)
+                    else:
+                        noise = torch.zeros_like(x)
+                    x = 1 / torch.sqrt(alpha) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
+            else:
+                t = None
+                x = model(I_image, t)
         x = (x.clamp(-1, 1) + 1) / 2
         x = (x * 255).type(torch.uint8)
         return x
@@ -98,7 +102,7 @@ class Diffusion:
         self.ema.step_ema(self.ema_model, self.model)
         self.scheduler.step()
 
-    def one_epoch(self, train=True):
+    def one_epoch(self, train=True, do_Diffusion = False):
         avg_loss = 0.
         if train: self.model.train()
         else: self.model.eval()
@@ -107,13 +111,18 @@ class Diffusion:
             with torch.autocast("cuda") and (torch.inference_mode() if not train else torch.enable_grad()):
                 img_i = img_i.to(self.device)
                 label_i = label_i.to(self.device)
-                t = self.sample_timesteps(img_i.shape[0]).to(self.device)
-                x_t, _ = self.noise_images(img_i, t)
-
+                if do_Diffusion == True:
+                    t = self.sample_timesteps(img_i.shape[0]).to(self.device)
+                    x_t, _ = self.noise_images(img_i, t)
+                else:
+                    t=None
+                    x_t = img_i
                 img_f = img_f.to(self.device)
                 label_f = label_f.to(self.device)
-                _ , noise = self.noise_images(img_f, t)
-        
+                if do_Diffusion == True:
+                    _ , noise = self.noise_images(img_f, t)
+                else:
+                    noise = img_f
                 predicted_noise = self.model(x_t, t)
                 loss = self.mse(noise, predicted_noise)
                 avg_loss += loss

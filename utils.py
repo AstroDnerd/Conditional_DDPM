@@ -107,16 +107,16 @@ def get_cifar_data(dataset_path, img_size=64, batch_size=8, train_folder="train"
     val_dataset = torchvision.datasets.ImageFolder(os.path.join(dataset_path, val_folder), transform=val_transforms)
 
     class0_indices_train = [i for i, (path, label) in enumerate(train_dataset.imgs) if label == 0]
-    class1_indices_train = [i for i, (path, label) in enumerate(train_dataset.imgs) if label == 1]
+    #class1_indices_train = [i for i, (path, label) in enumerate(train_dataset.imgs) if label == 1]
 
     class0_indices_val = [i for i, (path, label) in enumerate(val_dataset.imgs) if label == 0]
-    class1_indices_val = [i for i, (path, label) in enumerate(val_dataset.imgs) if label == 1]
+    #class1_indices_val = [i for i, (path, label) in enumerate(val_dataset.imgs) if label == 1]
 
-    train_dataset_I = torch.utils.data.Subset(train_dataset, indices=class0_indices_train)
-    val_dataset_I = torch.utils.data.Subset(val_dataset, indices=class0_indices_val)
+    train_dataset_I = torch.utils.data.Subset(train_dataset, indices=class0_indices_train[:len(class0_indices_train)//2])
+    val_dataset_I = torch.utils.data.Subset(val_dataset, indices=class0_indices_val[:len(class0_indices_val)//2])
 
-    train_dataset_F = torch.utils.data.Subset(train_dataset, indices=class1_indices_train)
-    val_dataset_F = torch.utils.data.Subset(val_dataset, indices=class1_indices_val)
+    train_dataset_F = torch.utils.data.Subset(train_dataset, indices=class0_indices_train[len(class0_indices_train)//2:])
+    val_dataset_F = torch.utils.data.Subset(val_dataset, indices=class0_indices_val[len(class0_indices_val)//2:])
     
     if slice_size>1:
         train_dataset_I = torch.utils.data.Subset(train_dataset_I, indices=range(0, len(train_dataset_I), slice_size))

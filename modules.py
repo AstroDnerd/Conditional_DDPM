@@ -98,8 +98,11 @@ class Down(nn.Module):
 
     def forward(self, x, t):
         x = self.maxpool_conv(x)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        return x + emb
+        if t!=None:
+            emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
+            return x + emb
+        else:
+            return x
 
 
 class Up(nn.Module):
@@ -124,8 +127,11 @@ class Up(nn.Module):
         x = self.up(x)
         x = torch.cat([skip_x, x], dim=1)
         x = self.conv(x)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        return x + emb
+        if t!=None:
+            emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
+            return x + emb
+        else:
+            return x
 
 
 class UNet(nn.Module):
@@ -192,8 +198,9 @@ class UNet(nn.Module):
         return output
     
     def forward(self, x, t):
-        t = t.unsqueeze(-1)
-        t = self.pos_encoding(t, self.time_dim)
+        if t != None:
+            t = t.unsqueeze(-1)
+            t = self.pos_encoding(t, self.time_dim)
         return self.unet_forwad(x, t)
 
 
